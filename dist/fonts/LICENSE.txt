@@ -1,3 +1,14 @@
+Two typefaces ship in this folder. Both are licensed under the SIL Open
+Font License, Version 1.1, whose full text is reproduced once at the end.
+
+  inter-*.woff2        Inter
+  eb-garamond-*.woff2  EB Garamond (display type on the marketing page)
+
+Copyright 2017 The EB Garamond Project Authors
+(https://github.com/octaviopardo/EBGaramond12)
+EBGaramond-Italic[wght].ttf: Copyright 2017 The EB Garamond Project Authors
+(https://github.com/octaviopardo/EBGaramond12)
+
 Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter) Inter-Italic[opsz,wght].ttf: Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.

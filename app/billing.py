@@ -35,7 +35,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-import auth
+from . import auth
 
 try:  # The server must still boot in a dev env without the stripe package.
     import stripe

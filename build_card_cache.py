@@ -365,11 +365,17 @@ def _cli_progress():
     return emit
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI parser, built without side effects so the admin panel can
+    introspect it for its command reference (see admin.build_parser)."""
     ap = argparse.ArgumentParser(description="Build a local Scryfall card cache.")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output SQLite path")
     ap.add_argument("--force", action="store_true", help="rebuild even if current")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     try:
         count = build(args.out, force=args.force, progress=_cli_progress())
     except httpx.HTTPError as e:

@@ -26,12 +26,14 @@ import json
 import re
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-import auth
+from . import auth
 from mtg_api import CARD_TOOL, get_cache, lookup_card
+
+from . import deck_import as deck_import_csv
 
 router = APIRouter(prefix="/api", tags=["deckbuilder"])
 
@@ -53,7 +55,9 @@ def configure(client, allowed_models: set[str], default_model: str,
 
 # ---- Input model (mirrors server.ChatRequest's caps) -----------------------
 
-MAX_DECK_CARDS = 250          # generous: Commander is 100, with a sideboard buffer
+MAX_DECK_CARDS = 150          # Commander is 100; the rest is sideboard headroom.
+                              # Also the ceiling on a CSV import - the whole list
+                              # goes into every prompt, so this bounds the spend.
 MAX_NAME_CHARS = 120
 MAX_NOTES_CHARS = 1_000
 MAX_TURNS = 12                # allow iterative refinement ("make it more aggressive")
@@ -419,12 +423,20 @@ class DeckSave(BaseModel):
 
 @router.get("/decks")
 def decks_list(user=Depends(auth.require_user)):
+    """Session-only, no membership check - and the same for decks_get and
+    decks_delete below. Building a deck is the members-only part; a deck you
+    already saved is your own data, and a lapsed membership shouldn't hold it
+    hostage or stop you clearing it out."""
     return {"decks": auth.list_decks(user["id"]), "max": auth.MAX_DECKS}
 
 
 @router.post("/decks")
 def decks_save(req: DeckSave, request: Request, user=Depends(auth.require_user)):
     auth.require_same_origin(request)
+    # Writing a deck is building one, so it needs a membership. Reading and
+    # deleting deliberately don't (see decks_list): a lapsed member keeps
+    # access to what they already saved.
+    auth.require_membership(user)
     name = req.name.strip()[:MAX_DECK_NAME_CHARS] or "Untitled deck"
     try:
         deck_id = auth.save_deck(
@@ -468,6 +480,7 @@ def deck_validate(req: DeckValidateRequest, request: Request,
     limit, banned/illegal cards, and deck size. Costs no tokens, so the page can
     call it as the player types and flag mistakes before they submit."""
     auth.require_same_origin(request)
+    auth.require_membership(user)
     if not get_cache_safe():
         raise HTTPException(503, "Card cache is missing. Run `python build_card_cache.py`.")
 
@@ -479,6 +492,72 @@ def deck_validate(req: DeckValidateRequest, request: Request,
     if analysis["commander"]:
         analysis["commander"].pop("text", None)
     return analysis
+
+
+# A ManaBox export of 150 cards is ~25KB; this leaves room for wider exports
+# without ever letting one request buffer something large. The upload is read in
+# memory and dropped when this function returns - the CSV is never written to
+# disk and never reaches the database. Only the decklist the user then chooses to
+# save is persisted, through the ordinary /api/decks path.
+MAX_CSV_BYTES = 2 * 1024 * 1024
+
+
+@router.post("/deck/import")
+async def deck_import(file: UploadFile, request: Request,
+                      user=Depends(auth.require_user)):
+    """Parse a collection-tracker CSV (ManaBox, Moxfield, ...) into a decklist.
+
+    Returns the decklist text for the composer to fill in; it does not save a
+    deck. The player reviews what came back - including any names the local card
+    cache doesn't recognise - names it, and saves through /api/decks as usual.
+    """
+    auth.require_same_origin(request)
+    # Checked before a byte is read, so a non-member's upload is refused at the
+    # door rather than after buffering it.
+    auth.require_membership(user)
+
+    chunks, size = [], 0
+    while chunk := await file.read(1 << 16):
+        size += len(chunk)
+        if size > MAX_CSV_BYTES:
+            raise HTTPException(
+                413, f"That file is larger than {MAX_CSV_BYTES // (1024 * 1024)}MB."
+            )
+        chunks.append(chunk)
+    if not size:
+        raise HTTPException(400, "That file is empty.")
+
+    raw = b"".join(chunks)
+    try:
+        # utf-8-sig: Excel and several trackers write a BOM, which would
+        # otherwise end up glued to the first column name.
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("latin-1")
+        except UnicodeDecodeError:
+            raise HTTPException(400, "That file isn't valid text. Export it as CSV, not XLSX.")
+
+    try:
+        result = deck_import_csv.parse_csv(text, max_entries=MAX_DECK_CARDS)
+    except deck_import_csv.CsvImportError as exc:
+        raise HTTPException(400, str(exc))
+
+    # Flag names the local cache doesn't know, rather than dropping them: a
+    # tracker can hold tokens, art cards and non-English printings, and the
+    # player should see what won't resolve instead of wondering where it went.
+    unknown = [c["name"] for c in result["cards"] if not _cache_only(c["name"])]
+
+    return {
+        "ok": True,
+        "cards": result["text"],
+        "entries": result["entries"],
+        "copies": result["copies"],
+        "merged": result["merged"],
+        "unknown": unknown[:50],
+        "unknown_total": len(unknown),
+        "columns": result["columns"],
+    }
 
 
 @router.post("/deckbuilder")

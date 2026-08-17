@@ -32,7 +32,7 @@ import getpass
 import os
 import sys
 
-import auth
+from app import auth
 
 
 def cmd_list(_):
@@ -211,8 +211,14 @@ def cmd_comp(args):
     print(f"{args.email}: comp subscription {'granted' if on else 'revoked'}.")
 
 
-def main():
-    auth.init_db()
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI's argument parser, with no side effects.
+
+    Split out of main() so the admin panel can introspect the real parser when
+    it renders its buttons and its shell-command reference - which is what stops
+    the panel from ever drifting from the CLI. main() keeps the auth.init_db()
+    call: merely listing the commands must not create or migrate a database.
+    """
     p = argparse.ArgumentParser(description="MTG Oracle user admin")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -272,7 +278,12 @@ def main():
     sp.add_argument("state", choices=["on", "off"])
     sp.set_defaults(func=cmd_comp)
 
-    args = p.parse_args()
+    return p
+
+
+def main():
+    auth.init_db()
+    args = build_parser().parse_args()
     args.func(args)
 
 

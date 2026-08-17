@@ -21,6 +21,7 @@ UTF-8 throughout: the rules contain characters like the real minus sign
 (U+2212) and curly quotes that Windows' default cp1252 codec can't write.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -152,56 +153,84 @@ def parse_glossary(gloss: list[str]):
     return chunks
 
 
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: python ingest.py rules.txt")
-        sys.exit(1)
+HERE = Path(__file__).parent
+DEFAULT_RULES_OUT = HERE / "rules.json"
+DEFAULT_DOCS_OUT = HERE / "docs.json"
 
-    src = Path(sys.argv[1])
-    if not src.exists():
-        print(f"File not found: {src}")
-        sys.exit(1)
 
-    print(f"Reading {src} ...")
-    lines = src.read_text(encoding="utf-8").splitlines()
+def build_from_text(text: str) -> tuple[list[dict], dict]:
+    """Parse the Comprehensive Rules text into (rules_chunks, docs).
 
+    The entire parse with no file I/O, so callers that already hold the text -
+    notably the admin panel's upload handler - run the exact same code the CLI
+    does. `rules_chunks` is the BM25 corpus written to rules.json (base rules
+    with their subrules folded in, plus one chunk per glossary term); `docs` is
+    the object written to docs.json.
+    """
+    lines = text.splitlines()
     body_start, glossary_start = split_body_and_glossary(lines)
     effective_date = find_effective_date(lines[:body_start])
     rules, sections, subsections = parse_rules(lines[body_start:glossary_start])
     glossary = parse_glossary(lines[glossary_start + 1:])
+    docs = {
+        "effective_date": effective_date,
+        "sections": sections,
+        "subsections": subsections,
+        "rules": [{"rule": c["rule"], "text": c["text"]} for c in rules],
+    }
+    return rules + glossary, docs
 
-    here = Path(__file__).parent
 
-    rules_out = here / "rules.json"
+def write_outputs(chunks: list[dict], docs: dict,
+                  rules_out: Path = DEFAULT_RULES_OUT,
+                  docs_out: Path = DEFAULT_DOCS_OUT) -> None:
+    """Write both artifacts. UTF-8 explicitly - see the module docstring."""
     rules_out.write_text(
-        json.dumps(rules + glossary, ensure_ascii=False, indent=0),
-        encoding="utf-8",
+        json.dumps(chunks, ensure_ascii=False, indent=0), encoding="utf-8",
     )
-    print(
-        f"Wrote {rules_out} "
-        f"({len(rules)} rules + {len(glossary)} glossary entries)."
+    docs_out.write_text(
+        json.dumps(docs, ensure_ascii=False, indent=0), encoding="utf-8",
     )
 
-    docs_out = here / "docs.json"
-    docs_out.write_text(
-        json.dumps(
-            {
-                "effective_date": effective_date,
-                "sections": sections,
-                "subsections": subsections,
-                "rules": [{"rule": c["rule"], "text": c["text"]} for c in rules],
-            },
-            ensure_ascii=False,
-            indent=0,
-        ),
-        encoding="utf-8",
+
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI parser, built without side effects so the admin panel can
+    introspect it for its command reference (same reason as admin.build_parser)."""
+    p = argparse.ArgumentParser(
+        description="Parse the Comprehensive Rules .txt into rules.json + docs.json."
+    )
+    p.add_argument("src", type=Path, help="path to the Comprehensive Rules .txt")
+    p.add_argument("--out-rules", type=Path, default=DEFAULT_RULES_OUT,
+                   help="output path for the BM25 corpus")
+    p.add_argument("--out-docs", type=Path, default=DEFAULT_DOCS_OUT,
+                   help="output path for the in-app rules browser")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if not args.src.exists():
+        print(f"File not found: {args.src}", file=sys.stderr)
+        return 1
+
+    print(f"Reading {args.src} ...")
+    chunks, docs = build_from_text(args.src.read_text(encoding="utf-8"))
+    write_outputs(chunks, docs, args.out_rules, args.out_docs)
+
+    n_rules = len(docs["rules"])
+    print(
+        f"Wrote {args.out_rules} "
+        f"({n_rules} rules + {len(chunks) - n_rules} glossary entries)."
     )
     print(
-        f"Wrote {docs_out} "
-        f"({len(sections)} sections, {len(subsections)} subsections, "
-        f"{len(rules)} rules; effective date: {effective_date or 'not found'})."
+        f"Wrote {args.out_docs} "
+        f"({len(docs['sections'])} sections, {len(docs['subsections'])} "
+        f"subsections, {n_rules} rules; effective date: "
+        f"{docs['effective_date'] or 'not found'})."
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

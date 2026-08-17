@@ -1,0 +1,1 @@
+import{w as i,f as e}from"./auth-form.CDFG2uyk.js";i({endpoint:"/api/auth/login",body:()=>({email:e("email"),password:e("password"),remember:document.getElementById("remember-me").checked}),onSuccess:()=>{window.location.href="/arbiter"},failText:"Sign in failed."});
